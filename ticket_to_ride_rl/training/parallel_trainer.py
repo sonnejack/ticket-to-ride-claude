@@ -221,70 +221,154 @@ class ParallelTrainer:
         if not comparison:
             return None
 
-        table = Table(title="Tracking vs Blind Performance", box=box.ROUNDED)
-        table.add_column("Archetype", style="cyan")
-        table.add_column("Blind", justify="right")
-        table.add_column("Tracking", justify="right")
-        table.add_column("Advantage", justify="right")
+        # Archetype icons
+        icons = {
+            'six_shooter': '🎯',
+            'instant_gratification': '⚡',
+            'hoarder': '💰',
+            'blocker': '🛡️',
+            'wildcard': '🃏',
+        }
+
+        table = Table(box=box.ROUNDED, border_style="bright_blue")
+        table.add_column("", width=3)
+        table.add_column("Archetype", style="bold")
+        table.add_column("👁️ Blind", justify="right")
+        table.add_column("🔍 Track", justify="right")
+        table.add_column("Δ Advantage", justify="right")
 
         for arch, modes in sorted(comparison.items()):
             blind_rate = modes.get('blind', {}).get('win_rate', 0)
             tracking_rate = modes.get('tracking', {}).get('win_rate', 0)
             advantage = tracking_rate - blind_rate
+            icon = icons.get(arch, '•')
 
-            adv_style = "green" if advantage > 0.02 else "red" if advantage < -0.02 else "dim"
+            if advantage > 0.02:
+                adv_str = f"[bold green]▲ +{round(advantage*100)}%[/bold green]"
+            elif advantage < -0.02:
+                adv_str = f"[bold red]▼ {round(advantage*100)}%[/bold red]"
+            else:
+                adv_str = f"[dim]━ 0%[/dim]"
 
             table.add_row(
+                icon,
                 arch.replace('_', ' ').title(),
-                f"{blind_rate:.0%}",
-                f"{tracking_rate:.0%}",
-                f"[{adv_style}]{advantage:+.0%}[/{adv_style}]"
+                f"{round(blind_rate*100)}%",
+                f"{round(tracking_rate*100)}%",
+                adv_str
             )
 
         return table
 
-    def _create_compact_status(self, elapsed: float) -> 'Panel':
-        """Create compact status panel for live display."""
+    def _create_live_dashboard(self, elapsed: float) -> 'Table':
+        """Create a beautiful live dashboard display."""
         if not RICH_AVAILABLE:
             return None
 
         win_rates = self._get_win_rates()
         sorted_rates = sorted(win_rates.items(), key=lambda x: -x[1])
 
-        # Compact archetype names
-        name_map = {
-            'six_shooter': '6Shot',
-            'instant_gratification': 'Inst',
-            'hoarder': 'Hoard',
-            'blocker': 'Block',
-            'wildcard': 'Wild',
+        # Archetype display config with colors and icons
+        arch_config = {
+            'six_shooter': {'name': 'Six Shooter', 'icon': '🎯', 'color': 'bright_red'},
+            'instant_gratification': {'name': 'Instant', 'icon': '⚡', 'color': 'bright_yellow'},
+            'hoarder': {'name': 'Hoarder', 'icon': '💰', 'color': 'bright_green'},
+            'blocker': {'name': 'Blocker', 'icon': '🛡️', 'color': 'bright_blue'},
+            'wildcard': {'name': 'Wildcard', 'icon': '🃏', 'color': 'bright_magenta'},
         }
 
-        # Build win rate line
-        parts = []
-        for arch, rate in sorted_rates:
-            short_name = name_map.get(arch, arch[:5])
+        # Create the dashboard table
+        table = Table(box=box.DOUBLE_EDGE, border_style="bright_blue", padding=(0, 1))
+        table.add_column("", justify="center", width=3)
+        table.add_column("Archetype", style="bold", width=12)
+        table.add_column("Win Rate", justify="right", width=8)
+        table.add_column("Progress", width=30)
+
+        for rank, (arch, rate) in enumerate(sorted_rates, 1):
+            cfg = arch_config.get(arch, {'name': arch, 'icon': '•', 'color': 'white'})
             pct = round(rate * 100)
-            if pct >= 28:
-                parts.append(f"[green]{short_name} {pct}%[/green]")
-            elif pct >= 22:
-                parts.append(f"[yellow]{short_name} {pct}%[/yellow]")
+
+            # Medal for top 3
+            if rank == 1:
+                medal = "🥇"
+            elif rank == 2:
+                medal = "🥈"
+            elif rank == 3:
+                medal = "🥉"
             else:
-                parts.append(f"[red]{short_name} {pct}%[/red]")
+                medal = f"[dim]#{rank}[/dim]"
 
-        win_line = " | ".join(parts)
+            # Progress bar with gradient
+            bar_width = int(rate * 25)
+            bar = f"[{cfg['color']}]{'█' * bar_width}[/{cfg['color']}][dim]{'░' * (25 - bar_width)}[/dim]"
 
-        # Stats line
+            table.add_row(
+                medal,
+                f"{cfg['icon']} [{cfg['color']}]{cfg['name']}[/{cfg['color']}]",
+                f"[bold white]{pct}%[/bold white]",
+                bar
+            )
+
+        return table
+
+    def _create_stats_line(self, elapsed: float) -> Text:
+        """Create stats line."""
         games_per_sec = self.total_games / elapsed if elapsed > 0 else 0
-        stats_line = f"[dim]{self.total_games:,} games | {games_per_sec:.1f} g/s | {elapsed/60:.1f}m elapsed[/dim]"
+        pct_complete = (self.total_games / self.config.num_games) * 100
 
-        content = f"{win_line}\n{stats_line}"
-        return Panel(content, title="[bold]Win Rates[/bold]", border_style="blue", padding=(0, 1))
+        text = Text()
+        text.append("  📊 ", style="dim")
+        text.append(f"{self.total_games:,}", style="bold cyan")
+        text.append(f" / {self.config.num_games:,} games  ", style="dim")
+        text.append("⚡ ", style="dim")
+        text.append(f"{games_per_sec:.1f}", style="bold green")
+        text.append(" games/sec  ", style="dim")
+        text.append("⏱️ ", style="dim")
+        text.append(f"{elapsed:.0f}s", style="bold yellow")
+
+        return text
 
     def _make_live_display(self, progress: 'Progress', task_id, elapsed: float) -> 'Group':
-        """Create the live display group with progress bar and status."""
-        status_panel = self._create_compact_status(elapsed)
-        return Group(status_panel, progress)
+        """Create the live display group with dashboard and progress bar."""
+        dashboard = self._create_live_dashboard(elapsed)
+        stats = self._create_stats_line(elapsed)
+        return Group(dashboard, stats, progress)
+
+    def _print_header(self):
+        """Print beautiful header."""
+        if not RICH_AVAILABLE:
+            print("=" * 60)
+            print("TICKET TO RIDE - PARALLEL TRAINING")
+            print("=" * 60)
+            return
+
+        # ASCII art title
+        title = """
+[bold bright_blue]╔════════════════════════════════════════════════════════════════╗
+║[/bold bright_blue] [bold white]🚂 TICKET TO RIDE[/bold white] [bold bright_cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold bright_cyan] [bold bright_blue]║
+║[/bold bright_blue] [dim]Reinforcement Learning Arena[/dim]                                  [bold bright_blue]║
+╚════════════════════════════════════════════════════════════════╝[/bold bright_blue]
+"""
+        console.print(title)
+
+        # Config in a nice grid
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="bold cyan")
+        grid.add_column(style="bold white")
+        grid.add_column(style="bold cyan")
+        grid.add_column(style="bold white")
+
+        grid.add_row(
+            "🎮 Games:", f"{self.config.num_games:,}",
+            "👥 Players:", str(self.config.num_players)
+        )
+        grid.add_row(
+            "⚙️  Workers:", f"{self.config.num_workers}/{mp.cpu_count()} cores",
+            "📦 Batch:", str(self.config.games_per_batch)
+        )
+
+        console.print(Panel(grid, border_style="dim", padding=(0, 1)))
+        console.print()
 
     def train(self):
         """Run parallel training."""
@@ -292,14 +376,7 @@ class ParallelTrainer:
 
         # Print header
         if RICH_AVAILABLE:
-            console.print(Panel.fit(
-                "[bold blue]TICKET TO RIDE[/bold blue]\n"
-                "[dim]Parallel Reinforcement Learning Training[/dim]",
-                border_style="blue"
-            ))
-            console.print()
-            console.print(self._create_config_table())
-            console.print()
+            self._print_header()
         else:
             print("=" * 60)
             print("TICKET TO RIDE - PARALLEL TRAINING")
@@ -439,33 +516,47 @@ class ParallelTrainer:
             json.dump(results, f, indent=2)
 
     def _print_summary(self, elapsed: float):
-        """Print training summary."""
+        """Print beautiful training summary."""
         games_per_sec = self.total_games / elapsed
 
         if RICH_AVAILABLE:
+            # Victory banner
             console.print()
-            console.print(Panel.fit(
-                "[bold green]TRAINING COMPLETE[/bold green]",
-                border_style="green"
-            ))
+            banner = """
+[bold bright_green]╔════════════════════════════════════════════════════════════════╗
+║[/bold bright_green] [bold white]✨ TRAINING COMPLETE[/bold white] [bold bright_green]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold bright_green] [bold bright_green]║
+╚════════════════════════════════════════════════════════════════╝[/bold bright_green]
+"""
+            console.print(banner)
 
-            # Stats table
-            stats_table = Table(box=box.ROUNDED)
-            stats_table.add_column("Metric", style="cyan")
-            stats_table.add_column("Value", style="green")
-            stats_table.add_row("Total Games", f"{self.total_games:,}")
-            stats_table.add_row("Training Time", f"{elapsed/60:.1f} minutes")
-            stats_table.add_row("Games/Second", f"{games_per_sec:.1f}")
-            stats_table.add_row("Parallel Speedup", f"~{self.config.num_workers}x")
-            console.print(stats_table)
+            # Stats in a nice grid
+            stats_grid = Table.grid(padding=(0, 3))
+            stats_grid.add_column(justify="center")
+            stats_grid.add_column(justify="center")
+            stats_grid.add_column(justify="center")
+            stats_grid.add_column(justify="center")
+
+            stats_grid.add_row(
+                f"[bold cyan]🎮 {self.total_games:,}[/bold cyan]\n[dim]games[/dim]",
+                f"[bold green]⚡ {games_per_sec:.1f}[/bold green]\n[dim]games/sec[/dim]",
+                f"[bold yellow]⏱️  {elapsed/60:.1f}m[/bold yellow]\n[dim]elapsed[/dim]",
+                f"[bold magenta]🚀 {self.config.num_workers}x[/bold magenta]\n[dim]parallel[/dim]",
+            )
+
+            console.print(Panel(stats_grid, border_style="green"))
             console.print()
 
-            console.print(self._create_win_rate_table(self._get_win_rates()))
+            # Final leaderboard
+            console.print("[bold bright_white]🏆 FINAL LEADERBOARD[/bold bright_white]")
+            console.print(self._create_live_dashboard(elapsed))
             console.print()
+
+            # Tracking comparison
+            console.print("[bold bright_white]🔍 TRACKING ANALYSIS[/bold bright_white]")
             console.print(self._create_tracking_table())
             console.print()
 
-            console.print(f"[dim]Results saved to: {self.output_dir}[/dim]")
+            console.print(f"[dim]📁 Results saved to: {self.output_dir}[/dim]")
         else:
             print("\n" + "=" * 60)
             print("TRAINING COMPLETE")
