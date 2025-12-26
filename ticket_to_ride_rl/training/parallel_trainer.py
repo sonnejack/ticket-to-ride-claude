@@ -13,11 +13,13 @@ from collections import defaultdict
 
 # Rich CLI imports
 try:
-    from rich.console import Console
+    from rich.console import Console, Group
     from rich.table import Table
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, MofNCompleteColumn
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, MofNCompleteColumn, TaskProgressColumn
     from rich.panel import Panel
     from rich.live import Live
+    from rich.layout import Layout
+    from rich.text import Text
     from rich import box
     RICH_AVAILABLE = True
 except ImportError:
@@ -181,18 +183,18 @@ class ParallelTrainer:
         if not RICH_AVAILABLE:
             return None
 
-        table = Table(title=f"Win Rates ({self.total_games:,} games)", box=box.ROUNDED)
+        table = Table(title=f"Final Results ({self.total_games:,} games)", box=box.ROUNDED)
         table.add_column("Archetype", style="cyan")
         table.add_column("Win Rate", justify="right")
         table.add_column("Games", justify="right")
-        table.add_column("Progress", justify="left")
+        table.add_column("", justify="left")
 
         sorted_rates = sorted(win_rates.items(), key=lambda x: -x[1])
 
         for arch, rate in sorted_rates:
             games = self.archetype_games.get(arch, 0)
-            bar_width = int(rate * 30)
-            bar = "[green]" + "█" * bar_width + "[/green]" + "░" * (30 - bar_width)
+            bar_width = int(rate * 40)
+            bar = "[green]" + "█" * bar_width + "[/green]" + "░" * (40 - bar_width)
 
             if rate >= 0.28:
                 style = "bold green"
@@ -203,7 +205,7 @@ class ParallelTrainer:
 
             table.add_row(
                 arch.replace('_', ' ').title(),
-                f"[{style}]{rate:.1%}[/{style}]",
+                f"[{style}]{rate:.0%}[/{style}]",
                 f"{games:,}",
                 bar
             )
@@ -234,12 +236,55 @@ class ParallelTrainer:
 
             table.add_row(
                 arch.replace('_', ' ').title(),
-                f"{blind_rate:.1%}",
-                f"{tracking_rate:.1%}",
-                f"[{adv_style}]{advantage:+.1%}[/{adv_style}]"
+                f"{blind_rate:.0%}",
+                f"{tracking_rate:.0%}",
+                f"[{adv_style}]{advantage:+.0%}[/{adv_style}]"
             )
 
         return table
+
+    def _create_compact_status(self, elapsed: float) -> 'Panel':
+        """Create compact status panel for live display."""
+        if not RICH_AVAILABLE:
+            return None
+
+        win_rates = self._get_win_rates()
+        sorted_rates = sorted(win_rates.items(), key=lambda x: -x[1])
+
+        # Compact archetype names
+        name_map = {
+            'architect': 'Arch',
+            'instant_gratification': 'Inst',
+            'hoarder': 'Hoard',
+            'blocker': 'Block',
+            'wildcard': 'Wild',
+        }
+
+        # Build win rate line
+        parts = []
+        for arch, rate in sorted_rates:
+            short_name = name_map.get(arch, arch[:5])
+            pct = round(rate * 100)
+            if pct >= 28:
+                parts.append(f"[green]{short_name} {pct}%[/green]")
+            elif pct >= 22:
+                parts.append(f"[yellow]{short_name} {pct}%[/yellow]")
+            else:
+                parts.append(f"[red]{short_name} {pct}%[/red]")
+
+        win_line = " | ".join(parts)
+
+        # Stats line
+        games_per_sec = self.total_games / elapsed if elapsed > 0 else 0
+        stats_line = f"[dim]{self.total_games:,} games | {games_per_sec:.1f} g/s | {elapsed/60:.1f}m elapsed[/dim]"
+
+        content = f"{win_line}\n{stats_line}"
+        return Panel(content, title="[bold]Win Rates[/bold]", border_style="blue", padding=(0, 1))
+
+    def _make_live_display(self, progress: 'Progress', task_id, elapsed: float) -> 'Group':
+        """Create the live display group with progress bar and status."""
+        status_panel = self._create_compact_status(elapsed)
+        return Group(status_panel, progress)
 
     def train(self):
         """Run parallel training."""
@@ -255,10 +300,6 @@ class ParallelTrainer:
             console.print()
             console.print(self._create_config_table())
             console.print()
-
-            archetypes = ", ".join([a.value.replace('_', ' ').title() for a in get_archetype_types()])
-            console.print(f"[cyan]Archetypes:[/cyan] {archetypes}")
-            console.print()
         else:
             print("=" * 60)
             print("TICKET TO RIDE - PARALLEL TRAINING")
@@ -267,20 +308,19 @@ class ParallelTrainer:
 
         # Training loop
         if RICH_AVAILABLE:
-            with Progress(
+            progress = Progress(
                 SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(bar_width=40),
-                MofNCompleteColumn(),
+                TextColumn("[bold blue]Training[/bold blue]"),
+                BarColumn(bar_width=50, complete_style="green", finished_style="green"),
+                TaskProgressColumn(),
                 TextColumn("•"),
                 TimeElapsedColumn(),
                 TextColumn("•"),
                 TimeRemainingColumn(),
-                console=console,
-                refresh_per_second=2
-            ) as progress:
-                task = progress.add_task("[green]Training", total=self.config.num_games)
+            )
+            task = progress.add_task("Training", total=self.config.num_games)
 
+            with Live(progress, console=console, refresh_per_second=4) as live:
                 while self.total_games < self.config.num_games:
                     batch_size = min(
                         self.config.games_per_batch,
@@ -295,24 +335,25 @@ class ParallelTrainer:
                     self.total_games += batch_size
                     progress.update(task, completed=self.total_games)
 
+                    # Update live display with status
+                    elapsed = time.time() - start_time
+                    live.update(self._make_live_display(progress, task, elapsed))
+
                     # Strategy snapshot
                     if self.total_games % self.config.strategy_snapshot_interval < batch_size:
                         self.strategy_tracker.record_snapshot(self.total_games, results)
 
-                    # Logging
+                    # Record history (silently)
                     if self.total_games % self.config.log_interval < batch_size:
                         win_rates = self._get_win_rates()
                         self.win_rate_history.append({
                             'games': self.total_games,
                             'win_rates': win_rates.copy()
                         })
-                        console.print()
-                        console.print(self._create_win_rate_table(win_rates))
 
-                    # Checkpointing
+                    # Checkpointing (silently)
                     if self.total_games % self.config.checkpoint_interval < batch_size:
                         self._save_checkpoint()
-                        console.print(f"[dim]Checkpoint saved at {self.total_games:,} games[/dim]")
 
         else:
             # Fallback without rich
@@ -339,7 +380,6 @@ class ParallelTrainer:
                         'games': self.total_games,
                         'win_rates': win_rates.copy()
                     })
-                    print(f"\nWin rates: {win_rates}")
 
                 if self.total_games % self.config.checkpoint_interval < batch_size:
                     self._save_checkpoint()
