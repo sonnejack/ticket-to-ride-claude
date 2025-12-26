@@ -57,7 +57,7 @@ def run_quick_test():
 
         agent = PPOAgent(
             obs_dim=obs_dim,
-            archetype=ArchetypeType.ARCHITECT,
+            archetype=ArchetypeType.SIX_SHOOTER,
             use_tracking=True,
             num_players=4
         )

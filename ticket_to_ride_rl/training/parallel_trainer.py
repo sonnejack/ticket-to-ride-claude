@@ -253,7 +253,7 @@ class ParallelTrainer:
 
         # Compact archetype names
         name_map = {
-            'architect': 'Arch',
+            'six_shooter': '6Shot',
             'instant_gratification': 'Inst',
             'hoarder': 'Hoard',
             'blocker': 'Block',

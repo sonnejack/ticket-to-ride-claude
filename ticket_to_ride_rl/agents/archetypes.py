@@ -12,7 +12,7 @@ from ticket_to_ride_rl.game import ActionType, Action, GameState, CardColor
 
 class ArchetypeType(Enum):
     """The five distinct archetypes."""
-    ARCHITECT = "architect"
+    SIX_SHOOTER = "six_shooter"
     INSTANT_GRATIFICATION = "instant_gratification"
     HOARDER = "hoarder"
     BLOCKER = "blocker"
@@ -40,9 +40,14 @@ class ArchetypeConfig:
     prefer_wilds: bool = False
     prefer_long_routes: bool = False
 
+    # Route length preferences (for Six Shooter)
+    min_route_length: int = 1  # Minimum route length to consider
+    preferred_route_lengths: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6])
+
     # Strategic biases
     uses_hand_tracking: bool = False
     blocking_priority: float = 0.0  # 0-1, how much to prioritize blocking
+    mimic_leader: bool = False  # Copy the leading player's style
 
     # Timing preferences
     min_cards_before_playing: int = 0  # Minimum hand size before claiming routes
@@ -53,18 +58,20 @@ class ArchetypeConfig:
 
 
 ARCHETYPE_CONFIGS = {
-    ArchetypeType.ARCHITECT: ArchetypeConfig(
-        name="The Architect",
-        description="Draws 3 destinations at start, prefers gathering cards before playing, plans long routes",
-        initial_destinations=3,
-        min_destinations_keep=3,
-        draw_deck_bias=0.5,
-        draw_face_up_bias=0.3,
-        claim_route_bias=-0.3,
-        draw_destinations_bias=0.2,
+    ArchetypeType.SIX_SHOOTER: ArchetypeConfig(
+        name="Six Shooter",
+        description="Only claims 5-6 length routes, then 4-3 if necessary. Goes for big points.",
+        initial_destinations=2,
+        min_destinations_keep=2,
+        draw_deck_bias=0.6,
+        draw_face_up_bias=0.4,
+        claim_route_bias=0.5,
+        draw_destinations_bias=-0.3,
         prefer_long_routes=True,
-        min_cards_before_playing=8,
-        end_game_aggression=0.3,
+        min_route_length=5,  # Start with 5-6 only
+        preferred_route_lengths=[6, 5, 4, 3],  # Priority order
+        min_cards_before_playing=5,
+        end_game_aggression=0.7,
         initial_exploration=0.2,
     ),
 
@@ -117,17 +124,18 @@ ARCHETYPE_CONFIGS = {
 
     ArchetypeType.WILDCARD: ArchetypeConfig(
         name="The Wildcard",
-        description="Random card draws from deck (never face-up), unpredictable timing",
+        description="Draws exclusively from deck (never face-up), mimics the leading player's strategy",
         initial_destinations=2,
-        min_destinations_keep=1,
-        draw_deck_bias=1.0,
-        draw_face_up_bias=-1.0,
+        min_destinations_keep=2,
+        draw_deck_bias=2.0,  # Strong preference for deck
+        draw_face_up_bias=-5.0,  # Never draw face-up
         claim_route_bias=0.0,
         draw_destinations_bias=0.0,
-        prefer_wilds=True,
+        prefer_wilds=False,
+        mimic_leader=True,  # Copy winning player's style
         min_cards_before_playing=0,
         end_game_aggression=0.5,
-        initial_exploration=0.4,
+        initial_exploration=0.3,
     ),
 }
 
@@ -141,6 +149,26 @@ class ArchetypePolicy:
     def __init__(self, archetype_type: ArchetypeType):
         self.archetype = archetype_type
         self.config = ARCHETYPE_CONFIGS[archetype_type]
+        self._leader_archetype = None  # For Wildcard mimicking
+
+    def _get_leader_config(self, game_state: GameState, player_idx: int) -> Optional[ArchetypeConfig]:
+        """Get the config of the leading player (for Wildcard mimic)."""
+        if not self.config.mimic_leader:
+            return None
+
+        # Find player with highest score (excluding self)
+        best_score = -999
+        best_idx = None
+        for i, p in enumerate(game_state.players):
+            if i != player_idx and p.score > best_score:
+                best_score = p.score
+                best_idx = i
+
+        if best_idx is None:
+            return None
+
+        # Default to Hoarder-like behavior (most successful archetype)
+        return ARCHETYPE_CONFIGS[ArchetypeType.HOARDER]
 
     def get_action_biases(self, actions: List[Action], game_state: GameState,
                            player_idx: int) -> np.ndarray:
@@ -151,6 +179,9 @@ class ArchetypePolicy:
         biases = np.zeros(len(actions))
         player = game_state.players[player_idx]
 
+        # For Wildcard, get leader's config to mimic (except for card drawing)
+        mimic_config = self._get_leader_config(game_state, player_idx) if self.config.mimic_leader else None
+
         for i, action in enumerate(actions):
             bias = 0.0
 
@@ -158,9 +189,9 @@ class ArchetypePolicy:
             if action.action_type == ActionType.DRAW_DECK:
                 bias += self.config.draw_deck_bias
 
-                # Hoarder prefers deck draws
+                # Wildcard always draws from deck
                 if self.archetype == ArchetypeType.WILDCARD:
-                    bias += 0.5  # Strong preference
+                    bias += 2.0  # Very strong preference
 
             elif action.action_type == ActionType.DRAW_FACE_UP:
                 bias += self.config.draw_face_up_bias
@@ -172,19 +203,50 @@ class ArchetypePolicy:
                         if face_up[action.face_up_index] == CardColor.WILD:
                             bias += 0.5
 
-                # Wildcard archetype never draws face-up
+                # Wildcard archetype NEVER draws face-up
                 if self.archetype == ArchetypeType.WILDCARD:
-                    bias -= 2.0
+                    bias -= 10.0  # Massive penalty
 
             elif action.action_type == ActionType.CLAIM_ROUTE:
-                bias += self.config.claim_route_bias
+                # Use mimic config for route claiming if Wildcard
+                active_config = mimic_config if mimic_config else self.config
+
+                bias += active_config.claim_route_bias
 
                 # Check hand size threshold
-                if player.hand.total() < self.config.min_cards_before_playing:
+                if player.hand.total() < active_config.min_cards_before_playing:
                     bias -= 0.5
 
-                # Long route preference
-                if self.config.prefer_long_routes and action.route_id is not None:
+                # Six Shooter: Strong preference for long routes
+                if self.archetype == ArchetypeType.SIX_SHOOTER and action.route_id is not None:
+                    route = game_state.board.routes[action.route_id]
+                    # Check if any 5-6 routes are available
+                    has_long_routes = any(
+                        a.action_type == ActionType.CLAIM_ROUTE and
+                        a.route_id is not None and
+                        game_state.board.routes[a.route_id].length >= 5
+                        for a in actions
+                    )
+
+                    if route.length == 6:
+                        bias += 2.0  # Highest priority
+                    elif route.length == 5:
+                        bias += 1.5
+                    elif route.length == 4:
+                        if has_long_routes:
+                            bias -= 1.0  # Avoid if long routes available
+                        else:
+                            bias += 0.5  # OK if no long routes
+                    elif route.length == 3:
+                        if has_long_routes:
+                            bias -= 1.5
+                        else:
+                            bias += 0.2
+                    else:  # 1-2 length
+                        bias -= 2.0  # Strongly avoid short routes
+
+                # General long route preference
+                elif self.config.prefer_long_routes and action.route_id is not None:
                     route = game_state.board.routes[action.route_id]
                     if route.length >= 5:
                         bias += 0.3
@@ -196,7 +258,9 @@ class ArchetypePolicy:
                     bias += 0.5
 
             elif action.action_type == ActionType.DRAW_DESTINATIONS:
-                bias += self.config.draw_destinations_bias
+                # Use mimic config for destinations if Wildcard
+                active_config = mimic_config if mimic_config else self.config
+                bias += active_config.draw_destinations_bias
 
             biases[i] = bias
 
@@ -217,10 +281,12 @@ class ArchetypePolicy:
             # Base points value
             score += dest.points / 20.0  # Normalize
 
-            # Architect likes high-value destinations
-            if self.archetype == ArchetypeType.ARCHITECT:
+            # Six Shooter likes medium-high destinations (long routes = high points)
+            if self.archetype == ArchetypeType.SIX_SHOOTER:
                 if dest.points >= 15:
-                    score += 0.5
+                    score += 0.4
+                elif dest.points >= 11:
+                    score += 0.2
 
             # Hoarder likes long destinations (higher points usually = longer)
             if self.archetype == ArchetypeType.HOARDER:
@@ -233,6 +299,11 @@ class ArchetypePolicy:
                     score += 0.3
                 elif dest.points >= 15:
                     score -= 0.2
+
+            # Wildcard mimics leader - prefer moderate destinations
+            if self.archetype == ArchetypeType.WILDCARD:
+                if 8 <= dest.points <= 15:
+                    score += 0.2
 
             # Check synergy with existing destinations
             existing_cities = set()
