@@ -24,11 +24,11 @@ This project uses Proximal Policy Optimization (PPO) with self-play to train AI 
 
 | Archetype | Strategy |
 |-----------|----------|
-| **Architect** | Focuses on long routes and completing destination tickets |
-| **Instant Gratification** | Claims routes aggressively, prioritizes immediate points |
+| **Six Shooter** | Only claims 5-6 length routes for max points, falls back to 4-3 if necessary |
+| **Instant Gratification** | Claims routes immediately when possible, minimal planning |
 | **Hoarder** | Accumulates large hand before claiming routes |
 | **Blocker** | Watches opponents and blocks strategic routes |
-| **Wildcard** | Prioritizes collecting wild cards for flexibility |
+| **Wildcard** | Draws exclusively from deck (unpredictable), mimics the leading player |
 
 ## Installation
 
@@ -119,25 +119,25 @@ results/ttr_parallel/
 
 ## Example Results
 
-After training on 1,000 games:
+After training on 500 games:
 
 **Win Rates by Archetype:**
 | Archetype | Win Rate |
 |-----------|----------|
-| Hoarder | 35.5% |
-| Instant Gratification | 30.7% |
-| Blocker | 26.3% |
-| Architect | 16.0% |
-| Wildcard | 15.7% |
+| Wildcard | 60% |
+| Six Shooter | 30% |
+| Hoarder | 14% |
+| Blocker | 13% |
+| Instant Gratification | 11% |
 
 **Tracking vs Blind Performance:**
 | Archetype | Blind | Tracking | Advantage |
 |-----------|-------|----------|-----------|
-| Architect | 14.7% | 17.2% | +2.6% |
-| Instant Gratification | 29.8% | 31.5% | +1.7% |
-| Hoarder | 35.5% | 35.6% | +0.2% |
-| Blocker | 27.8% | 24.9% | -2.9% |
-| Wildcard | 15.8% | 15.7% | -0.0% |
+| Wildcard | 70% | 49% | -21% |
+| Six Shooter | 30% | 30% | -1% |
+| Hoarder | 12% | 15% | +3% |
+| Blocker | 14% | 11% | -3% |
+| Instant Gratification | 14% | 7% | -6% |
 
 ## Project Structure
 
